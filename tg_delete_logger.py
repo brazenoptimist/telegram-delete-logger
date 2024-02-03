@@ -7,6 +7,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import List, NamedTuple, Optional, Union
 
 from telethon import TelegramClient, events
@@ -42,16 +43,18 @@ from telethon.tl.types import (
 import config
 import file_encrypt
 
-TYPE_USER = 1
-TYPE_CHANNEL = 2
-TYPE_GROUP = 3
-TYPE_BOT = 4
-TYPE_UNKNOWN = 0
-
 client = TelegramClient("db/user", config.API_ID, config.API_HASH)
 my_id: int
 sqlite_cursor: sqlite3.Cursor
 sqlite_connection: sqlite3.Connection
+
+
+class ChatType(Enum):
+    USER = 1
+    CHANNEL = 2
+    GROUP = 3
+    BOT = 4
+    UNKNOWN = 0
 
 
 class DbMessage(NamedTuple):
@@ -89,15 +92,17 @@ def init_db():
     return cursor, connection
 
 
-async def get_chat_type(event: NewMessage.Event) -> int:
-    chat_type = TYPE_UNKNOWN
-    if event.is_group:  # chats and megagroups
-        chat_type = TYPE_GROUP
-    elif event.is_channel:  # megagroups and channels
-        chat_type = TYPE_CHANNEL
-    elif event.is_private:
-        chat_type = TYPE_BOT if (await event.get_sender()).bot else TYPE_USER
-    return chat_type
+async def get_chat_type(event: NewMessage.Event) -> ChatType:
+    # chats and supergroups
+    if event.is_group:
+        return ChatType.GROUP
+    # supergroups and channels
+    if event.is_channel:
+        return ChatType.CHANNEL
+    # direct messages
+    if event.is_private:
+        return ChatType.BOT if (await event.get_sender()).bot else ChatType.USER
+    return ChatType.UNKNOWN
 
 
 async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event]):
@@ -160,7 +165,7 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
                 from_id,
                 chat_id,
                 edited_time,
-                await get_chat_type(event),
+                (await get_chat_type(event)).value,
                 event.message.text,
                 sqlite3.Binary(pickle.dumps(event.message.media)),
                 int(noforwards),
@@ -532,15 +537,15 @@ async def delete_expired_messages() -> None:
             (type = ? and created_time < ?) OR
             (type = ? and created_time < ?)""",
             (
-                TYPE_USER,
+                ChatType.USER.value,
                 time_user,
-                TYPE_CHANNEL,
+                ChatType.CHANNEL.value,
                 time_channel,
-                TYPE_GROUP,
+                ChatType.GROUP.value,
                 time_group,
-                TYPE_BOT,
+                ChatType.BOT.value,
                 time_bot,
-                TYPE_UNKNOWN,
+                ChatType.UNKNOWN.value,
                 time_unknown,
             ),
         )
