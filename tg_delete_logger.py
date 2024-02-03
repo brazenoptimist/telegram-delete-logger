@@ -7,11 +7,12 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Union
+from typing import List, NamedTuple, Optional, Union
 
 from telethon import TelegramClient, events
 from telethon.events import MessageDeleted, MessageEdited, NewMessage
 from telethon.hints import Entity
+from telethon.tl.custom import Message
 from telethon.tl.functions.messages import SaveGifRequest, SaveRecentStickerRequest
 from telethon.tl.types import (
     Channel,
@@ -23,7 +24,6 @@ from telethon.tl.types import (
     DocumentAttributeSticker,
     DocumentAttributeVideo,
     InputDocument,
-    Message,
     MessageMediaContact,
     MessageMediaDice,
     MessageMediaGame,
@@ -35,6 +35,7 @@ from telethon.tl.types import (
     PeerChat,
     PeerUser,
     Photo,
+    TypeMessageMedia,
     UpdateReadMessagesContents,
 )
 
@@ -48,9 +49,19 @@ TYPE_BOT = 4
 TYPE_UNKNOWN = 0
 
 client = TelegramClient("db/user", config.API_ID, config.API_HASH)
-my_id = -1
-sqlite_cursor: sqlite3.Cursor = None
-sqlite_connection: sqlite3.Connection = None
+my_id: int
+sqlite_cursor: sqlite3.Cursor
+sqlite_connection: sqlite3.Connection
+
+
+class DbMessage(NamedTuple):
+    id: int
+    from_id: int
+    chat_id: int
+    msg_text: str
+    media: TypeMessageMedia
+    noforwards: bool
+    self_destructing: bool
 
 
 def init_db():
@@ -175,7 +186,8 @@ def get_sender_id(message) -> int:
 
 def load_messages_from_event(
     event: Union[MessageDeleted.Event, MessageEdited.Event, UpdateReadMessagesContents]
-) -> List[Message]:
+) -> List[DbMessage]:
+    ids = []
     if isinstance(event, MessageDeleted.Event):
         ids = event.deleted_ids[: config.RATE_LIMIT_NUM_MESSAGES]
     if isinstance(event, UpdateReadMessagesContents):
@@ -188,9 +200,11 @@ def load_messages_from_event(
         where_clause = f"WHERE chat_id = {event.chat_id} and id IN ({sql_message_ids})"
     else:
         where_clause = f'WHERE chat_id not like "-100%" and id IN ({sql_message_ids})'
-    query = f"""SELECT * FROM (SELECT id, from_id, chat_id, msg_text, media, noforwards,
-            self_destructing, created_time FROM messages {where_clause} ORDER BY edited_time DESC)
-            GROUP BY chat_id, id ORDER BY created_time ASC"""
+    query = (
+        "SELECT * FROM (SELECT id, from_id, chat_id, msg_text, media, noforwards,"  # noqa: S608
+        f"self_destructing, created_time FROM messages {where_clause} ORDER BY edited_time DESC)"  # noqa: S608
+        "GROUP BY chat_id, id ORDER BY created_time ASC"  # noqa: S608
+    )
 
     db_results = sqlite_cursor.execute(query).fetchall()
 
@@ -201,15 +215,15 @@ def load_messages_from_event(
             continue
 
         messages.append(
-            {
-                "id": db_result[0],
-                "from_id": db_result[1],
-                "chat_id": db_result[2],
-                "msg_text": db_result[3],
-                "media": pickle.loads(db_result[4]),
-                "noforwards": db_result[5],
-                "self_destructing": db_result[6],
-            }
+            DbMessage(
+                id=db_result[0],
+                from_id=db_result[1],
+                chat_id=db_result[2],
+                msg_text=db_result[3],
+                media=pickle.loads(db_result[4]),  # noqa: S301
+                noforwards=db_result[5],
+                self_destructing=db_result[6],
+            )
         )
 
     return messages
@@ -262,19 +276,20 @@ async def edited_deleted_handler(
     if isinstance(event, MessageEdited.Event) and not config.SAVE_EDITED_MESSAGES:
         return
 
-    messages = load_messages_from_event(event)
+    messages: List[DbMessage] = load_messages_from_event(event)
 
     log_deleted_sender_ids = []
 
     for message in messages:
-        if message["from_id"] in config.IGNORED_IDS or message["chat_id"] in config.IGNORED_IDS:
+        if message.from_id in config.IGNORED_IDS or message.chat_id in config.IGNORED_IDS:
             return
 
-        mention_sender = await create_mention(message["from_id"])
-        mention_chat = await create_mention(message["chat_id"], message["id"])
+        mention_sender = await create_mention(message.from_id)
+        mention_chat = await create_mention(message.chat_id, message.id)
 
-        log_deleted_sender_ids.append(message["from_id"])
+        log_deleted_sender_ids.append(message.from_id)
 
+        text = ""
         if isinstance(event, (MessageDeleted.Event, UpdateReadMessagesContents)):
             if isinstance(event, MessageDeleted.Event):
                 text = f"**Deleted message from: **{mention_sender}\n"
@@ -283,54 +298,54 @@ async def edited_deleted_handler(
 
             text += f"in {mention_chat}\n"
 
-            if message["msg_text"]:
-                text += "**Message:** \n" + message["msg_text"]
+            if message.msg_text:
+                text += "**Message:** \n" + message.msg_text
         elif isinstance(event, MessageEdited.Event):
             text = f"**✏Edited message from: **{mention_sender}\n"
 
             text += f"in {mention_chat}\n"
 
-            if message["msg_text"]:
-                text += f"**Original message:**\n{message['msg_text']}\n\n"
+            if message.msg_text:
+                text += f"**Original message:**\n{message.msg_text}\n\n"
             if event.message.text:
                 text += f"**Edited message:**\n{event.message.text}"
 
         is_sticker = (
-            hasattr(message["media"], "document")
-            and message["media"].document.attributes
+            hasattr(message.media, "document")
+            and message.media.document.attributes
             and any(
                 isinstance(attr, DocumentAttributeSticker)
-                for attr in message["media"].document.attributes
+                for attr in message.media.document.attributes
             )
         )
         is_gif = (
-            hasattr(message["media"], "document")
-            and message["media"].document.attributes
+            hasattr(message.media, "document")
+            and message.media.document.attributes
             and any(
                 isinstance(attr, DocumentAttributeAnimated)
-                for attr in message["media"].document.attributes
+                for attr in message.media.document.attributes
             )
         )
         is_round_video = (
-            hasattr(message["media"], "document")
-            and message["media"].document.attributes
+            hasattr(message.media, "document")
+            and message.media.document.attributes
             and any(
-                (isinstance(attr, DocumentAttributeVideo) and attr.round_message is True)
-                for attr in message["media"].document.attributes
+                isinstance(attr, DocumentAttributeVideo) and attr.round_message is True
+                for attr in message.media.document.attributes
             )
         )
-        is_dice = isinstance(message["media"], MessageMediaDice)
-        is_instant_view = isinstance(message["media"], MessageMediaWebPage)
-        is_game = isinstance(message["media"], MessageMediaGame)
-        is_geo = isinstance(message["media"], MessageMediaGeo)
-        is_poll = isinstance(message["media"], MessageMediaPoll)
-        is_contact = isinstance(message["media"], (MessageMediaContact, Contact))
+        is_dice = isinstance(message.media, MessageMediaDice)
+        is_instant_view = isinstance(message.media, MessageMediaWebPage)
+        is_game = isinstance(message.media, MessageMediaGame)
+        is_geo = isinstance(message.media, MessageMediaGeo)
+        is_poll = isinstance(message.media, MessageMediaPoll)
+        is_contact = isinstance(message.media, (MessageMediaContact, Contact))
 
         with retrieve_media_as_file(
-            message["id"],
-            message["chat_id"],
-            message["media"],
-            message["noforwards"] or message["self_destructing"],
+            message.id,
+            message.chat_id,
+            message.media,
+            message.noforwards or message.self_destructing,
         ) as media_file:
             if (
                 is_sticker
@@ -349,11 +364,13 @@ async def edited_deleted_handler(
                 await client.send_message(config.LOG_CHAT_ID, text, file=media_file)
 
         if is_gif and config.DELETE_SENT_GIFS_FROM_SAVED:
-            await delete_from_saved_gifs(message["media"].document)
+            await delete_from_saved_gifs(message.media.document)
 
         if is_sticker and config.DELETE_SENT_STICKERS_FROM_SAVED:
-            await delete_from_saved_stickers(message["media"].document)
+            await delete_from_saved_stickers(message.media.document)
 
+    ids = []
+    event_verb = "unknown"
     if isinstance(event, MessageDeleted.Event):
         ids = event.deleted_ids
         event_verb = "deleted"
@@ -419,7 +436,8 @@ async def save_restricted_msg(link: str):
         msg_id = int(parts[-1])
         chat_id = int(parts[-2]) if parts[-2].isdigit() else parts[-2]
 
-    msg = await client.get_messages(chat_id, ids=msg_id)
+    msg_list = await client.get_messages(chat_id, ids=[msg_id], limit=1)
+    msg: Message = msg_list[0]
     chat_id = msg.chat_id
     from_id = get_sender_id(msg)
 
