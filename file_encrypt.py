@@ -1,7 +1,9 @@
 import io
-from os import stat
 from contextlib import contextmanager
+from os import stat
+
 import pyAesCrypt
+
 import config
 
 BUFFER_SIZE = 1024 * 1024
@@ -16,9 +18,8 @@ def encrypted(file_path, password=config.FILE_PASSWORD):
         yield tmp_file
     finally:
         tmp_file.seek(0)
-        with open(file_path, 'wb') as f_out:
-            pyAesCrypt.encryptStream(
-                tmp_file, f_out, password, bufferSize=BUFFER_SIZE)
+        with open(file_path, "wb") as f_out:
+            pyAesCrypt.encryptStream(tmp_file, f_out, password, bufferSize=BUFFER_SIZE)
         tmp_file.close()
 
 
@@ -26,9 +27,14 @@ def encrypted(file_path, password=config.FILE_PASSWORD):
 def decrypted(file_path, password=config.FILE_PASSWORD):
     tmp_file = io.BytesIO()
     try:
-        with open(file_path, 'rb') as f_in:
+        with open(file_path, "rb") as f_in:
             pyAesCrypt.decryptStream(
-                f_in, tmp_file, password, bufferSize=BUFFER_SIZE, inputLength=stat(file_path).st_size)
+                f_in,
+                tmp_file,
+                password,
+                bufferSize=BUFFER_SIZE,
+                inputLength=stat(file_path).st_size,
+            )
         tmp_file.seek(0)
         yield tmp_file
     finally:
