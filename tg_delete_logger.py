@@ -150,7 +150,7 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
                 chat_id,
                 edited_time,
                 await get_chat_type(event),
-                event.message.message,
+                event.message.text,
                 sqlite3.Binary(pickle.dumps(event.message.media)),
                 int(noforwards),
                 int(self_destructing),
