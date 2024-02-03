@@ -155,7 +155,6 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
     async with asyncio.Lock():
         if isinstance(event, MessageEdited.Event):
             edited_time = datetime.now(timezone.utc)  # event.message.edit_date
-            await edited_deleted_handler(event)
 
         sqlite_cursor.execute(
             "INSERT INTO messages (id, from_id, chat_id, edited_time, type, msg_text, media,"
