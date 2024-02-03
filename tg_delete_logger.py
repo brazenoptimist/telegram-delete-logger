@@ -372,7 +372,7 @@ async def edited_deleted_handler(
 
     logging.info(
         f"Got 1 {event_verb} message. DB has {len(messages)}. "
-        "Users: {', '.join(str(_id) for _id in log_deleted_sender_ids)}"
+        f"Users: {', '.join(str(_id) for _id in log_deleted_sender_ids)}"
     )
 
 
