@@ -5,11 +5,13 @@ import os
 import pickle
 import re
 import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import List, NamedTuple, Optional, Union
+from typing import List, Optional, Union
 
+from sqlalchemy import and_, delete, or_, select
 from telethon import TelegramClient, events
 from telethon.events import MessageDeleted, MessageEdited, NewMessage
 from telethon.hints import Entity
@@ -42,6 +44,7 @@ from telethon.tl.types import (
 
 import config
 import file_encrypt
+from database import DbMessage, async_session, register_models
 
 client = TelegramClient("db/user", config.API_ID, config.API_HASH)
 my_id: int
@@ -55,41 +58,6 @@ class ChatType(Enum):
     GROUP = 3
     BOT = 4
     UNKNOWN = 0
-
-
-class DbMessage(NamedTuple):
-    id: int
-    from_id: int
-    chat_id: int
-    msg_text: str
-    media: TypeMessageMedia
-    noforwards: bool
-    self_destructing: bool
-
-
-def init_db():
-    if not os.path.exists("db"):
-        os.mkdir("db")
-    if not os.path.exists("media"):
-        os.mkdir("media")
-
-    connection = sqlite3.connect("db/messages.db")
-    cursor = connection.cursor()
-    cursor.execute(
-        """CREATE TABLE IF NOT EXISTS messages
-             (id INTEGER, from_id INTEGER, chat_id INTEGER,
-              type INTEGER, msg_text TEXT, media BLOB, noforwards INTEGER DEFAULT 0,
-              self_destructing INTEGER DEFAULT 0, created_time TIMESTAMP, edited_time TIMESTAMP,
-              PRIMARY KEY (chat_id, id, edited_time))"""
-    )
-
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS messages_created_index ON messages (created_time DESC)"
-    )
-
-    connection.commit()
-
-    return cursor, connection
 
 
 async def get_chat_type(event: NewMessage.Event) -> ChatType:
@@ -132,7 +100,7 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
     if from_id in config.IGNORED_IDS or chat_id in config.IGNORED_IDS:
         return
 
-    edited_time = 0
+    edited_at = None
     noforwards = False
     self_destructing = False
 
@@ -152,27 +120,27 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
     if event.message.media and (noforwards or self_destructing):
         await save_media_as_file(event.message)
 
-    async with asyncio.Lock():
-        if isinstance(event, MessageEdited.Event):
-            edited_time = datetime.now(timezone.utc)  # event.message.edit_date
+    if isinstance(event, MessageEdited.Event):
+        edited_at = datetime.now(timezone.utc)  # event.message.edit_date
 
-        sqlite_cursor.execute(
-            "INSERT INTO messages (id, from_id, chat_id, edited_time, type, msg_text, media,"
-            "noforwards, self_destructing, created_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                msg_id,
-                from_id,
-                chat_id,
-                edited_time,
-                (await get_chat_type(event)).value,
-                event.message.text,
-                sqlite3.Binary(pickle.dumps(event.message.media)),
-                int(noforwards),
-                int(self_destructing),
-                datetime.now(timezone.utc),
-            ),
-        )
-        sqlite_connection.commit()
+    async with async_session() as session:
+        query = select(DbMessage.id).where(DbMessage.id == msg_id)
+        if not (await session.execute(query)).scalar():
+            media = pickle.dumps(event.message.media) if event.message.media else None
+            message = DbMessage(
+                id=msg_id,
+                from_id=from_id,
+                chat_id=chat_id,
+                type=(await get_chat_type(event)).value,
+                msg_text=event.message.text,
+                media=media,
+                noforwards=noforwards,
+                self_destructing=self_destructing,
+                created_at=datetime.now(timezone.utc),
+                edited_at=edited_at,
+            )
+            session.add(message)
+            await session.commit()
 
 
 def get_sender_id(message) -> int:
@@ -188,10 +156,10 @@ def get_sender_id(message) -> int:
     return from_id
 
 
-def load_messages_from_event(
+async def load_messages_from_event(
     event: Union[MessageDeleted.Event, MessageEdited.Event, UpdateReadMessagesContents]
 ) -> List[DbMessage]:
-    ids = []
+    ids: List[int] = []
     if isinstance(event, MessageDeleted.Event):
         ids = event.deleted_ids[: config.RATE_LIMIT_NUM_MESSAGES]
     if isinstance(event, UpdateReadMessagesContents):
@@ -199,36 +167,37 @@ def load_messages_from_event(
     elif isinstance(event, MessageEdited.Event):
         ids = [event.message.id]
 
-    sql_message_ids = ",".join(str(deleted_id) for deleted_id in ids)
     if hasattr(event, "chat_id") and event.chat_id:
-        where_clause = f"WHERE chat_id = {event.chat_id} and id IN ({sql_message_ids})"
+        where_clause = (DbMessage.chat_id == event.chat_id, DbMessage.id.in_(ids))
     else:
-        where_clause = f'WHERE chat_id not like "-100%" and id IN ({sql_message_ids})'
-    query = (
-        "SELECT * FROM (SELECT id, from_id, chat_id, msg_text, media, noforwards,"  # noqa: S608
-        f"self_destructing, created_time FROM messages {where_clause} ORDER BY edited_time DESC)"  # noqa: S608
-        "GROUP BY chat_id, id ORDER BY created_time ASC"  # noqa: S608
-    )
+        where_clause = (DbMessage.chat_id.notlike("-100%"), DbMessage.id.in_(ids))
 
-    db_results = sqlite_cursor.execute(query).fetchall()
+    async with async_session() as session:
+        query = (
+            select(
+                DbMessage.id,
+                DbMessage.from_id,
+                DbMessage.chat_id,
+                DbMessage.msg_text,
+                DbMessage.media,
+                DbMessage.noforwards,
+                DbMessage.self_destructing,
+                DbMessage.created_at,
+            )
+            .where(*where_clause)  # apply the where clause
+            .order_by(DbMessage.edited_at.desc())  # order by edited time
+            .distinct(DbMessage.chat_id, DbMessage.id)  # group by chat id and id
+            .order_by(DbMessage.created_at.asc())  # order by created time
+        )
+
+        db_results: List[DbMessage] = (await session.execute(query)).all()
 
     messages = []
     for db_result in db_results:
         # skip read messages which are not self-destructing
-        if isinstance(event, UpdateReadMessagesContents) and not db_result[6]:
+        if isinstance(event, UpdateReadMessagesContents) and not db_result.self_destructing:
             continue
-
-        messages.append(
-            DbMessage(
-                id=db_result[0],
-                from_id=db_result[1],
-                chat_id=db_result[2],
-                msg_text=db_result[3],
-                media=pickle.loads(db_result[4]),  # noqa: S301
-                noforwards=db_result[5],
-                self_destructing=db_result[6],
-            )
-        )
+        messages.append(db_result)
 
     return messages
 
@@ -280,11 +249,14 @@ async def edited_deleted_handler(
     if isinstance(event, MessageEdited.Event) and not config.SAVE_EDITED_MESSAGES:
         return
 
-    messages: List[DbMessage] = load_messages_from_event(event)
+    # todo: update message text to edited one in db
+    messages: List[DbMessage] = await load_messages_from_event(event)
 
     log_deleted_sender_ids = []
 
     for message in messages:
+        media = pickle.loads(message.media) if message.media else None  # noqa: S301
+
         if message.from_id in config.IGNORED_IDS or message.chat_id in config.IGNORED_IDS:
             return
 
@@ -315,40 +287,38 @@ async def edited_deleted_handler(
                 text += f"**Edited message:**\n{event.message.text}"
 
         is_sticker = (
-            hasattr(message.media, "document")
-            and message.media.document.attributes
+            hasattr(media, "document")
+            and media.document.attributes
             and any(
-                isinstance(attr, DocumentAttributeSticker)
-                for attr in message.media.document.attributes
+                isinstance(attr, DocumentAttributeSticker) for attr in media.document.attributes
             )
         )
         is_gif = (
-            hasattr(message.media, "document")
-            and message.media.document.attributes
+            hasattr(media, "document")
+            and media.document.attributes
             and any(
-                isinstance(attr, DocumentAttributeAnimated)
-                for attr in message.media.document.attributes
+                isinstance(attr, DocumentAttributeAnimated) for attr in media.document.attributes
             )
         )
         is_round_video = (
-            hasattr(message.media, "document")
-            and message.media.document.attributes
+            hasattr(media, "document")
+            and media.document.attributes
             and any(
                 isinstance(attr, DocumentAttributeVideo) and attr.round_message is True
-                for attr in message.media.document.attributes
+                for attr in media.document.attributes
             )
         )
-        is_dice = isinstance(message.media, MessageMediaDice)
-        is_instant_view = isinstance(message.media, MessageMediaWebPage)
-        is_game = isinstance(message.media, MessageMediaGame)
-        is_geo = isinstance(message.media, MessageMediaGeo)
-        is_poll = isinstance(message.media, MessageMediaPoll)
-        is_contact = isinstance(message.media, (MessageMediaContact, Contact))
+        is_dice = isinstance(media, MessageMediaDice)
+        is_instant_view = isinstance(media, MessageMediaWebPage)
+        is_game = isinstance(media, MessageMediaGame)
+        is_geo = isinstance(media, MessageMediaGeo)
+        is_poll = isinstance(media, MessageMediaPoll)
+        is_contact = isinstance(media, (MessageMediaContact, Contact))
 
         with retrieve_media_as_file(
             message.id,
             message.chat_id,
-            message.media,
+            media,
             message.noforwards or message.self_destructing,
         ) as media_file:
             if (
@@ -368,10 +338,10 @@ async def edited_deleted_handler(
                 await client.send_message(config.LOG_CHAT_ID, text, file=media_file)
 
         if is_gif and config.DELETE_SENT_GIFS_FROM_SAVED:
-            await delete_from_saved_gifs(message.media.document)
+            await delete_from_saved_gifs(media.document)
 
         if is_sticker and config.DELETE_SENT_STICKERS_FROM_SAVED:
-            await delete_from_saved_stickers(message.media.document)
+            await delete_from_saved_stickers(media.document)
 
     ids = []
     event_verb = "unknown"
@@ -529,28 +499,19 @@ async def delete_expired_messages() -> None:
         time_bot = now - timedelta(days=config.PERSIST_TIME_IN_DAYS_BOT)
         time_unknown = now - timedelta(days=config.PERSIST_TIME_IN_DAYS_GROUP)
 
-        sqlite_cursor.execute(
-            """DELETE FROM messages WHERE (type = ? and created_time < ?) OR
-            (type = ? and created_time < ?) OR
-            (type = ? and created_time < ?) OR
-            (type = ? and created_time < ?) OR
-            (type = ? and created_time < ?)""",
-            (
-                ChatType.USER.value,
-                time_user,
-                ChatType.CHANNEL.value,
-                time_channel,
-                ChatType.GROUP.value,
-                time_group,
-                ChatType.BOT.value,
-                time_bot,
-                ChatType.UNKNOWN.value,
-                time_unknown,
-            ),
+        where_clause = or_(
+            and_(DbMessage.type == ChatType.USER.value, DbMessage.created_at < time_user),
+            and_(DbMessage.type == ChatType.CHANNEL.value, DbMessage.created_at < time_channel),
+            and_(DbMessage.type == ChatType.GROUP.value, DbMessage.created_at < time_group),
+            and_(DbMessage.type == ChatType.BOT.value, DbMessage.created_at < time_bot),
+            and_(DbMessage.type == ChatType.UNKNOWN.value, DbMessage.created_at < time_unknown),
         )
 
-        if sqlite_cursor.rowcount > 0:
-            logging.info(f"Deleted {sqlite_cursor.rowcount} expired messages from DB")
+        async with async_session() as session:
+            result = await session.execute(delete(DbMessage).where(where_clause))
+            if result.rowcount > 0:
+                logging.info(f"Deleted {result.rowcount} expired messages from DB")
+            await session.commit()
 
         # todo: save group/channel label in file name
 
@@ -575,6 +536,13 @@ async def delete_expired_messages() -> None:
 
 async def init() -> None:
     global my_id
+
+    if not os.path.exists("db"):
+        os.mkdir("db")
+    if not os.path.exists("media"):
+        os.mkdir("media")
+
+    await register_models()
 
     if config.DEBUG_MODE:
         logging.basicConfig(level="INFO")
@@ -601,7 +569,7 @@ async def init() -> None:
 
 
 if __name__ == "__main__":
-    sqlite_cursor, sqlite_connection = init_db()
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
     with client:
         client.loop.run_until_complete(init())
