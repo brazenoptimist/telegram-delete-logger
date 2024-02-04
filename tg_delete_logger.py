@@ -367,33 +367,27 @@ async def edited_deleted_handler(
     )
 
 
-def get_file_name(media) -> str:
-    if media:
-        try:
-            file_name = [
-                attr
-                for attr in media.document.attributes
-                if isinstance(attr, DocumentAttributeFilename)
-            ][0].file_name
-        except Exception:
-            try:
-                mime_type = media.document.mime_type
-            except (NameError, AttributeError):
-                mime_type = None
+def get_file_name(media: TypeMessageMedia) -> str:
+    if isinstance(media, (MessageMediaPhoto, Photo)):
+        return "photo.jpg"
+    if isinstance(media, (MessageMediaContact, Contact)):
+        return "contact.vcf"
 
-            if mime_type == "audio/ogg":
-                file_name = "voicenote.ogg"
-            elif mime_type == "video/mp4":
-                file_name = "video.mp4"
-            elif isinstance(media, (MessageMediaPhoto, Photo)):
-                file_name = "photo.jpg"
-            elif isinstance(media, (MessageMediaContact, Contact)):
-                file_name = "contact.vcf"
-            else:
-                file_name = "file.unknown"
+    for attr in media.document.attributes:
+        if isinstance(attr, DocumentAttributeFilename) and hasattr(attr, "file_name"):
+            return attr.file_name
 
-        return file_name
-    return None
+    try:
+        mime_type = media.document.mime_type
+    except (NameError, AttributeError):
+        mime_type = None
+
+    if mime_type == "audio/ogg":
+        return "audio.ogg"
+    if mime_type == "video/mp4":
+        return "video.mp4"
+
+    return "file"
 
 
 async def save_restricted_msg(link: str):
