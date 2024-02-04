@@ -3,7 +3,6 @@ import logging
 import os
 import pickle
 import re
-import sqlite3
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -39,7 +38,6 @@ from telethon.tl.types import (
     UpdateReadMessagesContents,
 )
 
-import config
 from telegram_logger import encryption
 from telegram_logger.database import DbMessage, register_models
 from telegram_logger.database.methods import (
@@ -48,12 +46,11 @@ from telegram_logger.database.methods import (
     message_exists,
     save_message,
 )
+from telegram_logger.settings import settings
 from telegram_logger.types import ChatType
 
-client = TelegramClient("db/user", config.API_ID, config.API_HASH)
-my_id: int
-sqlite_cursor: sqlite3.Cursor
-sqlite_connection: sqlite3.Connection
+client: TelegramClient
+MY_ID: int
 
 
 async def get_chat_type(event: NewMessage.Event) -> ChatType:
@@ -75,8 +72,8 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
     msg_id = event.message.id
 
     if (
-        chat_id == config.LOG_CHAT_ID
-        and from_id == my_id
+        chat_id == settings.log_chat_id
+        and from_id == MY_ID
         and event.message.text
         and (
             re.match(r"^(https://)?t\.me/(?:c/)?\w+/\d+", event.message.text)
@@ -93,7 +90,7 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
                 await save_restricted_msg(msg_link)
             return
 
-    if from_id in config.IGNORED_IDS or chat_id in config.IGNORED_IDS:
+    if from_id in settings.ignored_ids or chat_id in settings.ignored_ids:
         return
 
     edited_at = None
@@ -138,7 +135,7 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
 def get_sender_id(message) -> int:
     from_id = 0
     if isinstance(message.peer_id, PeerUser):
-        from_id = my_id if message.out else message.peer_id.user_id
+        from_id = MY_ID if message.out else message.peer_id.user_id
     elif isinstance(message.peer_id, (PeerChannel, PeerChat)):
         if isinstance(message.from_id, PeerUser):
             from_id = message.from_id.user_id
@@ -153,9 +150,9 @@ async def load_messages_from_event(
 ) -> List[DbMessage]:
     ids: List[int] = []
     if isinstance(event, MessageDeleted.Event):
-        ids = event.deleted_ids[: config.RATE_LIMIT_NUM_MESSAGES]
+        ids = event.deleted_ids[: settings.rate_limit_num_messages]
     if isinstance(event, UpdateReadMessagesContents):
-        ids = event.messages[: config.RATE_LIMIT_NUM_MESSAGES]
+        ids = event.messages[: settings.rate_limit_num_messages]
     elif isinstance(event, MessageEdited.Event):
         ids = [event.message.id]
 
@@ -214,7 +211,7 @@ async def edited_deleted_handler(
     ):
         return
 
-    if isinstance(event, MessageEdited.Event) and not config.SAVE_EDITED_MESSAGES:
+    if isinstance(event, MessageEdited.Event) and not settings.save_edited_messages:
         return
 
     # todo: update message text to edited one in db
@@ -225,7 +222,7 @@ async def edited_deleted_handler(
     for message in messages:
         media = pickle.loads(message.media) if message.media else None  # noqa: S301
 
-        if message.from_id in config.IGNORED_IDS or message.chat_id in config.IGNORED_IDS:
+        if message.from_id in settings.ignored_ids or message.chat_id in settings.ignored_ids:
             return
 
         mention_sender = await create_mention(message.from_id)
@@ -404,7 +401,7 @@ async def save_restricted_msg(link: str):
         else:
             await client.send_message("me", text)
     except Exception as e:
-        await client.send_message(config.LOG_CHAT_ID, str(e))
+        await client.send_message(settings.log_chat_id, str(e))
 
 
 async def save_media_as_file(msg: Message):
@@ -412,7 +409,7 @@ async def save_media_as_file(msg: Message):
     chat_id = msg.chat_id
 
     if msg.media:
-        if msg.file and msg.file.size > config.MAX_IN_MEMORY_FILE_SIZE:
+        if msg.file and msg.file.size > settings.max_in_memory_file_size:
             raise Exception(f"File too large to save ({msg.file.size} bytes)")
         file_path = f"media/{msg_id}_{chat_id}"
 
@@ -470,7 +467,7 @@ async def delete_expired_messages() -> None:
 
         num_files_deleted = 0
         file_persist_days = max(
-            config.PERSIST_TIME_IN_DAYS_GROUP, config.PERSIST_TIME_IN_DAYS_CHANNEL
+            settings.persist_time_in_days_group, settings.persist_time_in_days_channel
         )
         for dirpath, dirnames, filenames in os.walk("../media"):
             for filename in filenames:
@@ -488,7 +485,7 @@ async def delete_expired_messages() -> None:
 
 
 async def init() -> None:
-    global my_id
+    global MY_ID
 
     if not os.path.exists("../db"):
         os.mkdir("../db")
@@ -497,18 +494,18 @@ async def init() -> None:
 
     await register_models()
 
-    if config.DEBUG_MODE:
+    if settings.debug_mode:
         logging.basicConfig(level="INFO")
     else:
         logging.basicConfig(level="WARNING")
 
-    config.IGNORED_IDS.add(config.LOG_CHAT_ID)
+    settings.ignored_ids.add(settings.log_chat_id)
 
-    my_id = (await client.get_me()).id
+    MY_ID = (await client.get_me()).id
 
     client.add_event_handler(
         new_message_handler,
-        events.NewMessage(incoming=True, outgoing=config.LISTEN_OUTGOING_MESSAGES),
+        events.NewMessage(incoming=True, outgoing=settings.listen_outgoing_messages),
     )
     client.add_event_handler(new_message_handler, events.MessageEdited())
     client.add_event_handler(edited_deleted_handler, events.MessageEdited())
@@ -524,5 +521,7 @@ async def init() -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-    with client:
+    with TelegramClient(
+        settings.session_name, settings.api_id, settings.api_hash.get_secret_value()
+    ) as client:
         client.loop.run_until_complete(init())

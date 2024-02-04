@@ -3,8 +3,7 @@ from contextlib import contextmanager
 from os import stat
 
 import pyAesCrypt
-
-import config
+from settings import settings
 
 BUFFER_SIZE = 1024 * 1024
 
@@ -12,7 +11,7 @@ BUFFER_SIZE = 1024 * 1024
 
 
 @contextmanager
-def encrypted(file_path, password=config.FILE_PASSWORD):
+def encrypted(file_path, password=settings.file_password.get_secret_value()):
     tmp_file = io.BytesIO()
     try:
         yield tmp_file
@@ -24,7 +23,7 @@ def encrypted(file_path, password=config.FILE_PASSWORD):
 
 
 @contextmanager
-def decrypted(file_path, password=config.FILE_PASSWORD):
+def decrypted(file_path, password=settings.file_password.get_secret_value()):
     tmp_file = io.BytesIO()
     try:
         with open(file_path, "rb") as f_in:

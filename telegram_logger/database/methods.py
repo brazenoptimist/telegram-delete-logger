@@ -6,8 +6,8 @@ from sqlalchemy import and_, delete, or_, select
 from telethon.events import MessageDeleted, MessageEdited
 from telethon.tl.types import UpdateReadMessagesContents
 
-import config
 from telegram_logger.database import DbMessage, async_session
+from telegram_logger.settings import settings
 from telegram_logger.types import ChatType
 
 
@@ -79,11 +79,11 @@ async def get_message_ids_by_event(
 
 async def delete_expired_messages_from_db(current_time: datetime) -> None:
     # calculate the expiry times for different chat types
-    time_user = current_time - timedelta(days=config.PERSIST_TIME_IN_DAYS_USER)
-    time_channel = current_time - timedelta(days=config.PERSIST_TIME_IN_DAYS_CHANNEL)
-    time_group = current_time - timedelta(days=config.PERSIST_TIME_IN_DAYS_GROUP)
-    time_bot = current_time - timedelta(days=config.PERSIST_TIME_IN_DAYS_BOT)
-    time_unknown = current_time - timedelta(days=config.PERSIST_TIME_IN_DAYS_GROUP)
+    time_user = current_time - timedelta(days=settings.persist_time_in_days_user)
+    time_channel = current_time - timedelta(days=settings.persist_time_in_days_channel)
+    time_group = current_time - timedelta(days=settings.persist_time_in_days_group)
+    time_bot = current_time - timedelta(days=settings.persist_time_in_days_bot)
+    time_unknown = current_time - timedelta(days=settings.persist_time_in_days_group)
 
     where_clause = or_(
         and_(DbMessage.type == ChatType.USER.value, DbMessage.created_at < time_user),

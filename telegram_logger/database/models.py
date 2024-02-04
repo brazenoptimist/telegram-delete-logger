@@ -1,13 +1,16 @@
 from datetime import datetime
-from typing import Annotated, Final, TypeAlias
+from typing import Annotated, TypeAlias
 
 from sqlalchemy import BigInteger, Index, Integer, func
 from sqlalchemy.ext.asyncio import (
     AsyncAttrs,
+    AsyncEngine,
     async_sessionmaker,
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, registry
+
+from telegram_logger.settings import Settings
 
 Int16: TypeAlias = Annotated[int, 16]
 Int64: TypeAlias = Annotated[int, 64]
@@ -40,6 +43,5 @@ async def register_models() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-db_file = "sqlite+aiosqlite:///db/messages.db"
-engine: Final = create_async_engine(url=db_file)
-async_session: Final = async_sessionmaker(engine, expire_on_commit=False)
+engine: AsyncEngine = create_async_engine(url=Settings().build_sqlite_url())
+async_session = async_sessionmaker(bind=engine, expire_on_commit=False)
