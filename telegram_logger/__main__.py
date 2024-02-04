@@ -7,10 +7,8 @@ import sqlite3
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from enum import Enum
 from typing import List, Optional, Union
 
-from sqlalchemy import and_, delete, or_, select
 from telethon import TelegramClient, events
 from telethon.events import MessageDeleted, MessageEdited, NewMessage
 from telethon.hints import Entity
@@ -43,20 +41,19 @@ from telethon.tl.types import (
 
 import config
 from telegram_logger import encryption
-from telegram_logger.database import DbMessage, async_session, register_models
+from telegram_logger.database import DbMessage, register_models
+from telegram_logger.database.methods import (
+    delete_expired_messages_from_db,
+    get_message_ids_by_event,
+    message_exists,
+    save_message,
+)
+from telegram_logger.types import ChatType
 
 client = TelegramClient("db/user", config.API_ID, config.API_HASH)
 my_id: int
 sqlite_cursor: sqlite3.Cursor
 sqlite_connection: sqlite3.Connection
-
-
-class ChatType(Enum):
-    USER = 1
-    CHANNEL = 2
-    GROUP = 3
-    BOT = 4
-    UNKNOWN = 0
 
 
 async def get_chat_type(event: NewMessage.Event) -> ChatType:
@@ -122,24 +119,20 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
     if isinstance(event, MessageEdited.Event):
         edited_at = datetime.now(timezone.utc)  # event.message.edit_date
 
-    async with async_session() as session:
-        query = select(DbMessage.id).where(DbMessage.id == msg_id)
-        if not (await session.execute(query)).scalar():
-            media = pickle.dumps(event.message.media) if event.message.media else None
-            message = DbMessage(
-                id=msg_id,
-                from_id=from_id,
-                chat_id=chat_id,
-                type=(await get_chat_type(event)).value,
-                msg_text=event.message.text,
-                media=media,
-                noforwards=noforwards,
-                self_destructing=self_destructing,
-                created_at=datetime.now(timezone.utc),
-                edited_at=edited_at,
-            )
-            session.add(message)
-            await session.commit()
+    if not await message_exists(msg_id):
+        media = pickle.dumps(event.message.media) if event.message.media else None
+        await save_message(
+            msg_id=msg_id,
+            from_id=from_id,
+            chat_id=chat_id,
+            type=(await get_chat_type(event)).value,
+            msg_text=event.message.text,
+            media=media,
+            noforwards=noforwards,
+            self_destructing=self_destructing,
+            created_at=datetime.now(timezone.utc),
+            edited_at=edited_at,
+        )
 
 
 def get_sender_id(message) -> int:
@@ -166,31 +159,7 @@ async def load_messages_from_event(
     elif isinstance(event, MessageEdited.Event):
         ids = [event.message.id]
 
-    if hasattr(event, "chat_id") and event.chat_id:
-        where_clause = (DbMessage.chat_id == event.chat_id, DbMessage.id.in_(ids))
-    else:
-        where_clause = (DbMessage.chat_id.notlike("-100%"), DbMessage.id.in_(ids))
-
-    async with async_session() as session:
-        query = (
-            select(
-                DbMessage.id,
-                DbMessage.from_id,
-                DbMessage.chat_id,
-                DbMessage.msg_text,
-                DbMessage.media,
-                DbMessage.noforwards,
-                DbMessage.self_destructing,
-                DbMessage.created_at,
-            )
-            .where(*where_clause)  # apply the where clause
-            .order_by(DbMessage.edited_at.desc())  # order by edited time
-            .distinct(DbMessage.chat_id, DbMessage.id)  # group by chat id and id
-            .order_by(DbMessage.created_at.asc())  # order by created time
-        )
-
-        db_results: List[DbMessage] = (await session.execute(query)).all()
-
+    db_results: List[DbMessage] = await get_message_ids_by_event(event, ids)
     messages = []
     for db_result in db_results:
         # skip read messages which are not self-destructing
@@ -320,6 +289,7 @@ async def edited_deleted_handler(
             media,
             message.noforwards or message.self_destructing,
         ) as media_file:
+            m = text.replace("\n", " ")
             if (
                 is_sticker
                 or is_round_video
@@ -329,12 +299,17 @@ async def edited_deleted_handler(
                 or is_geo
                 or is_poll
             ):
-                sent_msg = await client.send_message(config.LOG_CHAT_ID, file=media_file)
-                await sent_msg.reply(text)
+                # sent_msg: Message = await client.send_message(config.LOG_CHAT_ID, file=media_file)
+                # await sent_msg.reply(text)
+                # print(f"{is_round_video=}")
+                logging.info(f"{'<new media file>' if media_file else ''} {m}")
             elif is_instant_view:
-                await client.send_message(config.LOG_CHAT_ID, text)
+                # await client.send_message(config.LOG_CHAT_ID, text)
+                logging.info(f"{m}")
             else:
-                await client.send_message(config.LOG_CHAT_ID, text, file=media_file)
+                # await client.send_message(config.LOG_CHAT_ID, text, file=media_file)
+                # logging.info(f"media: {media_file} {m}")
+                logging.info(f"{'<new media file>' if media_file else ''} {m}")
 
         if is_gif and config.DELETE_SENT_GIFS_FROM_SAVED:
             await delete_from_saved_gifs(media.document)
@@ -367,6 +342,9 @@ async def edited_deleted_handler(
 
 
 def get_file_name(media: TypeMessageMedia) -> str:
+    if not media:
+        return ""
+
     if isinstance(media, (MessageMediaPhoto, Photo)):
         return "photo.jpg"
     if isinstance(media, (MessageMediaContact, Contact)):
@@ -486,25 +464,7 @@ async def delete_from_saved_stickers(sticker: Document):
 async def delete_expired_messages() -> None:
     while True:
         now = datetime.now(timezone.utc)
-        time_user = now - timedelta(days=config.PERSIST_TIME_IN_DAYS_USER)
-        time_channel = now - timedelta(days=config.PERSIST_TIME_IN_DAYS_CHANNEL)
-        time_group = now - timedelta(days=config.PERSIST_TIME_IN_DAYS_GROUP)
-        time_bot = now - timedelta(days=config.PERSIST_TIME_IN_DAYS_BOT)
-        time_unknown = now - timedelta(days=config.PERSIST_TIME_IN_DAYS_GROUP)
-
-        where_clause = or_(
-            and_(DbMessage.type == ChatType.USER.value, DbMessage.created_at < time_user),
-            and_(DbMessage.type == ChatType.CHANNEL.value, DbMessage.created_at < time_channel),
-            and_(DbMessage.type == ChatType.GROUP.value, DbMessage.created_at < time_group),
-            and_(DbMessage.type == ChatType.BOT.value, DbMessage.created_at < time_bot),
-            and_(DbMessage.type == ChatType.UNKNOWN.value, DbMessage.created_at < time_unknown),
-        )
-
-        async with async_session() as session:
-            result = await session.execute(delete(DbMessage).where(where_clause))
-            if result.rowcount > 0:
-                logging.info(f"Deleted {result.rowcount} expired messages from DB")
-            await session.commit()
+        await delete_expired_messages_from_db(current_time=now)
 
         # todo: save group/channel label in file name
 
