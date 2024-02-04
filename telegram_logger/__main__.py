@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import asyncio
 import logging
 import os
@@ -43,8 +42,8 @@ from telethon.tl.types import (
 )
 
 import config
-import file_encrypt
-from database import DbMessage, async_session, register_models
+from telegram_logger import encryption
+from telegram_logger.database import DbMessage, async_session, register_models
 
 client = TelegramClient("db/user", config.API_ID, config.API_HASH)
 my_id: int
@@ -439,7 +438,7 @@ async def save_media_as_file(msg: Message):
             raise Exception(f"File too large to save ({msg.file.size} bytes)")
         file_path = f"media/{msg_id}_{chat_id}"
 
-        with file_encrypt.encrypted(file_path) as f:
+        with encryption.encrypted(file_path) as f:
             await client.download_media(msg.media, f)
 
 
@@ -453,7 +452,7 @@ def retrieve_media_as_file(msg_id: int, chat_id: int, media, noforwards: bool):
         and not isinstance(media, MessageMediaGeo)
         and not isinstance(media, MessageMediaPoll)
     ):
-        with file_encrypt.decrypted(file_path) as f:
+        with encryption.decrypted(file_path) as f:
             f.name = file_name
             yield f
     else:
@@ -513,7 +512,7 @@ async def delete_expired_messages() -> None:
         file_persist_days = max(
             config.PERSIST_TIME_IN_DAYS_GROUP, config.PERSIST_TIME_IN_DAYS_CHANNEL
         )
-        for dirpath, dirnames, filenames in os.walk("media"):
+        for dirpath, dirnames, filenames in os.walk("../media"):
             for filename in filenames:
                 file_path = os.path.join(dirpath, filename)
                 modified_time = datetime.fromtimestamp(os.path.getmtime(file_path), timezone.utc)
@@ -531,10 +530,10 @@ async def delete_expired_messages() -> None:
 async def init() -> None:
     global my_id
 
-    if not os.path.exists("db"):
-        os.mkdir("db")
-    if not os.path.exists("media"):
-        os.mkdir("media")
+    if not os.path.exists("../db"):
+        os.mkdir("../db")
+    if not os.path.exists("../media"):
+        os.mkdir("../media")
 
     await register_models()
 
