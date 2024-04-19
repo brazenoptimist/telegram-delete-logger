@@ -1,4 +1,4 @@
-telethon~=1.34.0
+telethon
 cryptg~=0.4.0
 pyAesCrypt~=6.1.1
 SQLAlchemy~=2.0.25

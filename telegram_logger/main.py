@@ -296,22 +296,22 @@ async def edited_deleted_handler(
                 or is_geo
                 or is_poll
             ):
-                # sent_msg: Message = await client.send_message(config.LOG_CHAT_ID, file=media_file)
-                # await sent_msg.reply(text)
+                sent_msg: Message = await client.send_message(settings.log_chat_id, file=media_file)
+                await sent_msg.reply(text)
                 # print(f"{is_round_video=}")
                 logging.info(f"{'<new media file>' if media_file else ''} {m}")
             elif is_instant_view:
-                # await client.send_message(config.LOG_CHAT_ID, text)
+                await client.send_message(settings.log_chat_id, text)
                 logging.info(f"{m}")
             else:
-                # await client.send_message(config.LOG_CHAT_ID, text, file=media_file)
+                await client.send_message(settings.log_chat_id, text, file=media_file)
                 # logging.info(f"media: {media_file} {m}")
                 logging.info(f"{'<new media file>' if media_file else ''} {m}")
 
-        if is_gif and config.DELETE_SENT_GIFS_FROM_SAVED:
+        if is_gif and settings.delete_sent_gifs_from_saved:
             await delete_from_saved_gifs(media.document)
 
-        if is_sticker and config.DELETE_SENT_STICKERS_FROM_SAVED:
+        if is_sticker and settings.delete_sent_stickers_from_saved:
             await delete_from_saved_stickers(media.document)
 
     ids = []
@@ -326,10 +326,10 @@ async def edited_deleted_handler(
         ids = [event.message.id]
         event_verb = "edited"
 
-    if len(ids) > config.RATE_LIMIT_NUM_MESSAGES and log_deleted_sender_ids:
+    if len(ids) > settings.rate_limit_num_messages and log_deleted_sender_ids:
         await client.send_message(
-            config.LOG_CHAT_ID,
-            f"{len(ids)} messages {event_verb}. Logged {config.RATE_LIMIT_NUM_MESSAGES}.",
+            settings.log_chat_id,
+            f"{len(ids)} messages {event_verb}. Logged {settings.rate_limit_num_messages}.",
         )
 
     logging.info(
@@ -346,6 +346,8 @@ def get_file_name(media: TypeMessageMedia) -> str:
         return "photo.jpg"
     if isinstance(media, (MessageMediaContact, Contact)):
         return "contact.vcf"
+    if isinstance(media, MessageMediaWebPage):
+        return ""
 
     for attr in media.document.attributes:
         if isinstance(attr, DocumentAttributeFilename) and hasattr(attr, "file_name"):
@@ -371,7 +373,7 @@ async def save_restricted_msg(link: str):
             chat_id = int(parts[0])
             msg_id = int(parts[1])
         else:
-            await client.send_message(config.LOG_CHAT_ID, f"Could not parse link: {link}")
+            await client.send_message(settings.log_chat_id, f"Could not parse link: {link}")
             return
     else:
         parts = link.split("/")
@@ -516,12 +518,3 @@ async def init() -> None:
     # doesnt work for self destructs
 
     await delete_expired_messages()
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-
-    with TelegramClient(
-        settings.session_name, settings.api_id, settings.api_hash.get_secret_value()
-    ) as client:
-        client.loop.run_until_complete(init())

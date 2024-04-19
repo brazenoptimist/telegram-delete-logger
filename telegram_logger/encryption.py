@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from os import stat
 
 import pyAesCrypt
-from settings import settings
+from telegram_logger.settings import settings
 
 BUFFER_SIZE = 1024 * 1024
 
