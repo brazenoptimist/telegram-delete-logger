@@ -8,6 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     api_id: int
     api_hash: SecretStr
+    bot_token: str
+
     session_name: str = "db/user.session"
 
     log_chat_id: int

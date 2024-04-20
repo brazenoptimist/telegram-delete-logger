@@ -50,6 +50,7 @@ from telegram_logger.settings import settings
 from telegram_logger.types import ChatType
 
 client: TelegramClient
+bot: TelegramClient
 MY_ID: int
 
 
@@ -70,6 +71,9 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
     chat_id = event.chat_id
     from_id = get_sender_id(event.message)
     msg_id = event.message.id
+
+    if await get_chat_type(event) not in [ChatType.USER, ChatType.UNKNOWN]:
+        return
 
     if (
         chat_id == settings.log_chat_id
@@ -246,6 +250,9 @@ async def edited_deleted_handler(
 
             text += f"in {mention_chat}\n"
 
+            if message.msg_text == event.message.text:
+                return
+
             if message.msg_text:
                 text += f"**Original message:**\n{message.msg_text}\n\n"
             if event.message.text:
@@ -296,15 +303,17 @@ async def edited_deleted_handler(
                 or is_geo
                 or is_poll
             ):
-                sent_msg: Message = await client.send_message(settings.log_chat_id, file=media_file)
-                await sent_msg.reply(text)
+                msg = await client.send_message(settings.log_chat_id, file=media_file)
+                await bot.send_message(settings.log_chat_id, text, reply_to=msg.id)
                 # print(f"{is_round_video=}")
                 logging.info(f"{'<new media file>' if media_file else ''} {m}")
             elif is_instant_view:
-                await client.send_message(settings.log_chat_id, text)
+                await bot.send_message(settings.log_chat_id, text)
                 logging.info(f"{m}")
             else:
-                await client.send_message(settings.log_chat_id, text, file=media_file)
+                if media_file:
+                    await client.send_message(settings.log_chat_id, file=media_file)
+                await bot.send_message(settings.log_chat_id, text)
                 # logging.info(f"media: {media_file} {m}")
                 logging.info(f"{'<new media file>' if media_file else ''} {m}")
 
