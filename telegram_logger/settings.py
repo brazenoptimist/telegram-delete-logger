@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     ignored_ids: set[int] = {}
 
     listen_outgoing_messages: bool = True
-    save_edited_messages: bool = False
+    save_edited_messages: bool = True
     delete_sent_gifs_from_saved: bool = True
     delete_sent_stickers_from_saved: bool = True
 
@@ -29,10 +29,11 @@ class Settings(BaseSettings):
     persist_time_in_days_channel: int = 1
     persist_time_in_days_group: int = 1
 
-    debug_mode: bool = False
+    debug_mode: bool = True
     rate_limit_num_messages: int = 5
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8")
 
     def build_sqlite_url(self) -> str:
         return f"sqlite+aiosqlite:///{self.sqlite_db_file}"

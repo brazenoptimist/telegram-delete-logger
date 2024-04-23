@@ -84,7 +84,8 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
             or re.match(r"^tg://openmessage\?user_id=\d+&message_id=\d+", event.message.text)
         )
     ):
-        msg_links = re.findall(r"(?:https://)?t\.me/(?:c/)?\w+/\d+", event.message.text)
+        msg_links = re.findall(
+            r"(?:https://)?t\.me/(?:c/)?\w+/\d+", event.message.text)
         if not msg_links:
             msg_links = re.findall(
                 r"tg://openmessage\?user_id=\d+&message_id=\d+", event.message.text
@@ -121,7 +122,8 @@ async def new_message_handler(event: Union[NewMessage.Event, MessageEdited.Event
         edited_at = datetime.now(timezone.utc)  # event.message.edit_date
 
     if not await message_exists(msg_id):
-        media = pickle.dumps(event.message.media) if event.message.media else None
+        media = pickle.dumps(
+            event.message.media) if event.message.media else None
         await save_message(
             msg_id=msg_id,
             from_id=from_id,
@@ -150,7 +152,8 @@ def get_sender_id(message) -> int:
 
 
 async def load_messages_from_event(
-    event: Union[MessageDeleted.Event, MessageEdited.Event, UpdateReadMessagesContents]
+    event: Union[MessageDeleted.Event,
+                 MessageEdited.Event, UpdateReadMessagesContents]
 ) -> List[DbMessage]:
     ids: List[int] = []
     if isinstance(event, MessageDeleted.Event):
@@ -191,7 +194,8 @@ async def create_mention(entity_id, chat_msg_id: Optional[int] = None) -> str:
                     entity.last_name if entity.last_name else ""
                 )
 
-                mention = f"[{name}](tg://user?id={entity.id})" + (" #pm" if is_pm else "")
+                mention = f"[{name}](tg://user?id={entity.id})" + \
+                    (" #pm" if is_pm else "")
             elif entity.username:
                 mention = f"[@{entity.username}](t.me/{entity.username})"
             elif entity.phone:
@@ -206,7 +210,8 @@ async def create_mention(entity_id, chat_msg_id: Optional[int] = None) -> str:
 
 
 async def edited_deleted_handler(
-    event: Union[MessageDeleted.Event, MessageEdited.Event, UpdateReadMessagesContents]
+    event: Union[MessageDeleted.Event,
+                 MessageEdited.Event, UpdateReadMessagesContents]
 ):
     if (
         not isinstance(event, MessageDeleted.Event)
@@ -237,16 +242,16 @@ async def edited_deleted_handler(
         text = ""
         if isinstance(event, (MessageDeleted.Event, UpdateReadMessagesContents)):
             if isinstance(event, MessageDeleted.Event):
-                text = f"**Deleted message from: **{mention_sender}\n"
+                text = f"**❌ Deleted message from: **{mention_sender}\n"
             if isinstance(event, UpdateReadMessagesContents):
-                text = f"**Deleted #selfdestructing message from: **{mention_sender}\n"
+                text = f"**❌ Deleted #selfdestructing message from: **{mention_sender}\n"
 
             text += f"in {mention_chat}\n"
 
             if message.msg_text:
                 text += "**Message:** \n" + message.msg_text
         elif isinstance(event, MessageEdited.Event):
-            text = f"**✏Edited message from: **{mention_sender}\n"
+            text = f"** ✍🏻 Edited message from: **{mention_sender}\n"
 
             text += f"in {mention_chat}\n"
 
@@ -254,9 +259,9 @@ async def edited_deleted_handler(
                 return
 
             if message.msg_text:
-                text += f"**Original message:**\n{message.msg_text}\n\n"
+                text += f"**✍🏻Original message:**\n{message.msg_text}\n\n"
             if event.message.text:
-                text += f"**Edited message:**\n{event.message.text}"
+                text += f"**✍🏻Edited message:**\n{event.message.text}"
 
         is_sticker = (
             hasattr(media, "document")
@@ -276,7 +281,8 @@ async def edited_deleted_handler(
             hasattr(media, "document")
             and media.document.attributes
             and any(
-                isinstance(attr, DocumentAttributeVideo) and attr.round_message is True
+                isinstance(
+                    attr, DocumentAttributeVideo) and attr.round_message is True
                 for attr in media.document.attributes
             )
         )
@@ -483,7 +489,8 @@ async def delete_expired_messages() -> None:
         for dirpath, dirnames, filenames in os.walk("../media"):
             for filename in filenames:
                 file_path = os.path.join(dirpath, filename)
-                modified_time = datetime.fromtimestamp(os.path.getmtime(file_path), timezone.utc)
+                modified_time = datetime.fromtimestamp(
+                    os.path.getmtime(file_path), timezone.utc)
                 expiry_time = now - timedelta(days=file_persist_days)
                 if modified_time < expiry_time:
                     os.unlink(file_path)
@@ -516,7 +523,8 @@ async def init() -> None:
 
     client.add_event_handler(
         new_message_handler,
-        events.NewMessage(incoming=True, outgoing=settings.listen_outgoing_messages),
+        events.NewMessage(
+            incoming=True, outgoing=settings.listen_outgoing_messages),
     )
     client.add_event_handler(new_message_handler, events.MessageEdited())
     client.add_event_handler(edited_deleted_handler, events.MessageEdited())
